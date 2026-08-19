@@ -1,0 +1,28 @@
+Source: alacritty
+Section: x11
+Priority: optional
+Maintainer: Alacritty Maintainers <maintainers@alacritty.org>
+Build-Depends: debhelper (>= 12),
+               cargo,
+               rustc (>= 1.85.0),
+               pkg-config,
+               libfontconfig1-dev,
+               libfreetype6-dev,
+               libxcb-xfixes0-dev,
+               libxkbcommon-dev
+Standards-Version: 4.6.0
+Homepage: https://alacritty.org
+Vcs-Git: https://github.com/alacritty/alacritty.git
+
+Package: alacritty
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends},
+         libfontconfig1,
+         libfreetype6,
+         libxcb-xfixes0,
+         libxkbcommon0
+Description: A cross-platform, OpenGL terminal emulator
+ Alacritty is a modern terminal emulator that comes with sensible defaults,
+ but allows for extensive configuration. By integrating with other
+ applications, rather than reimplementing their functionality, it manages
+ to provide a flexible set of features with high performance.

@@ -1,0 +1,48 @@
+# Maintainer: Alacritty Maintainers <maintainers@alacritty.org>
+pkgname=alacritty
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A cross-platform, OpenGL terminal emulator"
+arch=('x86_64' 'aarch64' 'armv7h')
+url="https://alacritty.org"
+license=('Apache-2.0' 'MIT')
+depends=('fontconfig' 'freetype2' 'libxcb' 'libxkbcommon')
+makedepends=('cargo' 'rust' 'pkg-config' 'cmake')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/alacritty/alacritty/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    cargo build --release --locked
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    # Binary
+    install -Dm755 "target/release/alacritty" "$pkgdir/usr/bin/alacritty"
+
+    # Desktop file
+    install -Dm644 "extra/linux/Alacritty.desktop" "$pkgdir/usr/share/applications/Alacritty.desktop"
+
+    # App icon
+    install -Dm644 "extra/logo/alacritty-term.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/Alacritty.svg"
+
+    # Man pages
+    install -Dm644 "extra/man/alacritty.1.scd" "$pkgdir/usr/share/man/man1/alacritty.1"
+    install -Dm644 "extra/man/alacritty-msg.1.scd" "$pkgdir/usr/share/man/man1/alacritty-msg.1"
+    install -Dm644 "extra/man/alacritty.5.scd" "$pkgdir/usr/share/man/man5/alacritty.5"
+    install -Dm644 "extra/man/alacritty-bindings.5.scd" "$pkgdir/usr/share/man/man5/alacritty-bindings.5"
+
+    # Shell completions
+    install -Dm644 "extra/completions/alacritty.bash" "$pkgdir/usr/share/bash-completion/completions/alacritty"
+    install -Dm644 "extra/completions/alacritty.fish" "$pkgdir/usr/share/fish/vendor_completions.d/alacritty.fish"
+    install -Dm644 "extra/completions/_alacritty" "$pkgdir/usr/share/zsh/site-functions/_alacritty"
+
+    # Terminfo
+    install -Dm644 "extra/alacritty.info" "$pkgdir/usr/share/terminfo/a/alacritty"
+
+    # License
+    install -Dm644 "LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+    install -Dm644 "LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+}
