@@ -1,0 +1,406 @@
+name: Release Linux Packages
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 1.0.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-deb:
+    name: Build .deb (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            rust_target: x86_64-unknown-linux-gnu
+            dpkg_arch: amd64
+          - arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            dpkg_arch: arm64
+          - arch: armhf
+            rust_target: armv7-unknown-linux-gnueabihf
+            dpkg_arch: armhf
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        if: matrix.arch != 'amd64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.arch == 'arm64' && 'aarch64' || 'arm' }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> "$GITHUB_ENV"
+          elif [ "${{ matrix.arch }}" = "armhf" ]; then
+            sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_SYSROOT_DIR=/usr/arm-linux-gnueabihf" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev
+
+      - name: Build binary
+        run: cargo build --release --locked --target ${{ matrix.rust_target }}
+
+      - name: Create .deb package
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          PKG_DIR="alacritty_${VERSION}_${{ matrix.dpkg_arch }}"
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/bin"
+          mkdir -p "${PKG_DIR}/usr/share/applications"
+          mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${PKG_DIR}/usr/share/man/man1"
+          mkdir -p "${PKG_DIR}/usr/share/man/man5"
+          mkdir -p "${PKG_DIR}/usr/share/bash-completion/completions"
+          mkdir -p "${PKG_DIR}/usr/share/fish/vendor_completions.d"
+          mkdir -p "${PKG_DIR}/usr/share/zsh/vendor-completions"
+          mkdir -p "${PKG_DIR}/usr/share/terminfo/a"
+
+          # Binary
+          cp "target/${{ matrix.rust_target }}/release/alacritty" "${PKG_DIR}/usr/bin/"
+          chmod 755 "${PKG_DIR}/usr/bin/alacritty"
+
+          # Desktop file
+          cp extra/linux/Alacritty.desktop "${PKG_DIR}/usr/share/applications/"
+
+          # Icon
+          cp extra/logo/alacritty-term.svg "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps/Alacritty.svg"
+
+          # Man pages
+          cp extra/man/alacritty.1.scd "${PKG_DIR}/usr/share/man/man1/alacritty.1"
+          cp extra/man/alacritty-msg.1.scd "${PKG_DIR}/usr/share/man/man1/alacritty-msg.1"
+          cp extra/man/alacritty.5.scd "${PKG_DIR}/usr/share/man/man5/alacritty.5"
+          cp extra/man/alacritty-bindings.5.scd "${PKG_DIR}/usr/share/man/man5/alacritty-bindings.5"
+
+          # Shell completions
+          cp extra/completions/alacritty.bash "${PKG_DIR}/usr/share/bash-completion/completions/alacritty"
+          cp extra/completions/alacritty.fish "${PKG_DIR}/usr/share/fish/vendor_completions.d/alacritty.fish"
+          cp extra/completions/_alacritty "${PKG_DIR}/usr/share/zsh/vendor-completions/_alacritty"
+
+          # Terminfo
+          cp extra/alacritty.info "${PKG_DIR}/usr/share/terminfo/a/alacritty"
+
+          # Control file
+          INSTALLED_SIZE=$(du -sk "${PKG_DIR}" | cut -f1)
+          cat > "${PKG_DIR}/DEBIAN/control" << EOF
+          Package: alacritty
+          Version: ${VERSION}
+          Architecture: ${{ matrix.dpkg_arch }}
+          Maintainer: Alacritty Maintainers <maintainers@alacritty.org>
+          Installed-Size: ${INSTALLED_SIZE}
+          Depends: libfontconfig1, libfreetype6, libxcb-xfixes0, libxkbcommon0
+          Section: x11
+          Priority: optional
+          Homepage: https://alacritty.org
+          Description: A cross-platform, OpenGL terminal emulator
+           Alacritty is a modern terminal emulator that comes with sensible defaults,
+           but allows for extensive configuration. By integrating with other
+           applications, rather than reimplementing their functionality, it manages
+           to provide a flexible set of features with high performance.
+          EOF
+
+          # Build .deb
+          dpkg-deb --build "${PKG_DIR}"
+          mv "${PKG_DIR}.deb" "alacritty_${VERSION}_${{ matrix.dpkg_arch }}.deb"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.dpkg_arch }}
+          path: "*.deb"
+          retention-days: 5
+
+  build-rpm:
+    name: Build .rpm (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            rpm_arch: x86_64
+          - arch: aarch64
+            rust_target: aarch64-unknown-linux-gnu
+            rpm_arch: aarch64
+          - arch: armv7hl
+            rust_target: armv7-unknown-linux-gnueabihf
+            rpm_arch: armv7hl
+    container:
+      image: fedora:latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            rust cargo \
+            pkg-config \
+            fontconfig-devel \
+            freetype-devel \
+            libxcb-devel \
+            libxkbcommon-devel \
+            cmake \
+            rpm-build \
+            gcc \
+            git
+
+      - name: Install cross-compiler
+        if: matrix.arch != 'x86_64'
+        run: |
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            dnf install -y gcc-aarch64-linux-gnu
+            rustup target add aarch64-unknown-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          elif [ "${{ matrix.arch }}" = "armv7hl" ]; then
+            dnf install -y gcc-arm-linux-gnueabihf
+            rustup target add armv7-unknown-linux-gnueabihf
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build binary
+        run: cargo build --release --locked --target ${{ matrix.rust_target }}
+
+      - name: Build RPM
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Copy spec and set version
+          sed "s/%{version}/${VERSION}/g" packaging/rpm/alacritty.spec > ~/rpmbuild/SPECS/alacritty.spec
+
+          # Install files to buildroot
+          BUILDROOT=~/rpmbuild/BUILDROOT/alacritty-${VERSION}-1.$(. /etc/os-release && echo $ID).${{ matrix.rpm_arch }}
+          mkdir -p "${BUILDROOT}/usr/bin"
+          mkdir -p "${BUILDROOT}/usr/share/applications"
+          mkdir -p "${BUILDROOT}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${BUILDROOT}/usr/share/man/man1"
+          mkdir -p "${BUILDROOT}/usr/share/man/man5"
+          mkdir -p "${BUILDROOT}/usr/share/bash-completion/completions"
+          mkdir -p "${BUILDROOT}/usr/share/fish/vendor_completions.d"
+          mkdir -p "${BUILDROOT}/usr/share/zsh/site-functions"
+          mkdir -p "${BUILDROOT}/usr/share/terminfo/a"
+          mkdir -p "${BUILDROOT}/usr/share/licenses/alacritty"
+          mkdir -p "${BUILDROOT}/usr/share/doc/alacritty"
+
+          cp "target/${{ matrix.rust_target }}/release/alacritty" "${BUILDROOT}/usr/bin/"
+          cp extra/linux/Alacritty.desktop "${BUILDROOT}/usr/share/applications/"
+          cp extra/logo/alacritty-term.svg "${BUILDROOT}/usr/share/icons/hicolor/scalable/apps/Alacritty.svg"
+          cp extra/man/alacritty.1.scd "${BUILDROOT}/usr/share/man/man1/alacritty.1"
+          cp extra/man/alacritty-msg.1.scd "${BUILDROOT}/usr/share/man/man1/alacritty-msg.1"
+          cp extra/man/alacritty.5.scd "${BUILDROOT}/usr/share/man/man5/alacritty.5"
+          cp extra/man/alacritty-bindings.5.scd "${BUILDROOT}/usr/share/man/man5/alacritty-bindings.5"
+          cp extra/completions/alacritty.bash "${BUILDROOT}/usr/share/bash-completion/completions/alacritty"
+          cp extra/completions/alacritty.fish "${BUILDROOT}/usr/share/fish/vendor_completions.d/alacritty.fish"
+          cp extra/completions/_alacritty "${BUILDROOT}/usr/share/zsh/site-functions/_alacritty"
+          cp extra/alacritty.info "${BUILDROOT}/usr/share/terminfo/a/alacritty"
+          cp LICENSE-APACHE LICENSE-MIT "${BUILDROOT}/usr/share/licenses/alacritty/"
+          cp README.md CHANGELOG.md "${BUILDROOT}/usr/share/doc/alacritty/"
+
+          rpmbuild -bb --target ${{ matrix.rpm_arch }} \
+            --define "_topdir $HOME/rpmbuild" \
+            --buildroot "${BUILDROOT}" \
+            ~/rpmbuild/SPECS/alacritty.spec
+
+          cp ~/rpmbuild/RPMS/${{ matrix.rpm_arch }}/*.rpm .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.rpm_arch }}
+          path: "*.rpm"
+          retention-days: 5
+
+  build-arch:
+    name: Build .pkg.tar.zst (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            rust_target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            rust_target: aarch64-unknown-linux-gnu
+          - arch: armv7h
+            rust_target: armv7-unknown-linux-gnueabihf
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            rust \
+            pkg-config \
+            fontconfig \
+            freetype2 \
+            libxcb \
+            libxkbcommon \
+            cmake \
+            git
+
+      - name: Build package
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          # Update PKGBUILD version
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" packaging/arch/PKGBUILD
+
+          # Create a non-root user for makepkg
+          useradd -m builder
+          chown -R builder:builder .
+
+          # Build directly from source (skip download)
+          cd packaging/arch
+          cat > PKGBUILD << 'PKGBUILD_EOF'
+          pkgname=alacritty
+          pkgver=${VERSION}
+          pkgrel=1
+          pkgdesc="A cross-platform, OpenGL terminal emulator"
+          arch=('x86_64' 'aarch64' 'armv7h')
+          url="https://alacritty.org"
+          license=('Apache-2.0' 'MIT')
+          depends=('fontconfig' 'freetype2' 'libxcb' 'libxkbcommon')
+          makedepends=('cargo' 'rust' 'pkg-config' 'cmake')
+
+          build() {
+              cd "${startdir}/../.."
+              cargo build --release --locked
+          }
+
+          package() {
+              cd "${startdir}/../.."
+              install -Dm755 "target/release/alacritty" "$pkgdir/usr/bin/alacritty"
+              install -Dm644 "extra/linux/Alacritty.desktop" "$pkgdir/usr/share/applications/Alacritty.desktop"
+              install -Dm644 "extra/logo/alacritty-term.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/Alacritty.svg"
+              install -Dm644 "extra/man/alacritty.1.scd" "$pkgdir/usr/share/man/man1/alacritty.1"
+              install -Dm644 "extra/man/alacritty-msg.1.scd" "$pkgdir/usr/share/man/man1/alacritty-msg.1"
+              install -Dm644 "extra/man/alacritty.5.scd" "$pkgdir/usr/share/man/man5/alacritty.5"
+              install -Dm644 "extra/man/alacritty-bindings.5.scd" "$pkgdir/usr/share/man/man5/alacritty-bindings.5"
+              install -Dm644 "extra/completions/alacritty.bash" "$pkgdir/usr/share/bash-completion/completions/alacritty"
+              install -Dm644 "extra/completions/alacritty.fish" "$pkgdir/usr/share/fish/vendor_completions.d/alacritty.fish"
+              install -Dm644 "extra/completions/_alacritty" "$pkgdir/usr/share/zsh/site-functions/_alacritty"
+              install -Dm644 "extra/alacritty.info" "$pkgdir/usr/share/terminfo/a/alacritty"
+              install -Dm644 "LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+              install -Dm644 "LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+          }
+          PKGBUILD_EOF
+
+          # Replace version placeholder
+          sed -i "s/\${VERSION}/${VERSION}/" PKGBUILD
+
+          chown -R builder:builder .
+          su builder -c "makepkg -sf --noconfirm --skipinteg"
+          cp *.pkg.tar.zst ../../
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-${{ matrix.arch }}
+          path: "*.pkg.tar.zst"
+          retention-days: 5
+
+  publish-release:
+    name: Upload release artifacts
+    needs: [build-deb, build-rpm, build-arch]
+    if: github.event_name == 'push' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: List artifacts
+        run: find artifacts/ -type f | sort
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.pkg.tar.zst" \) -exec cp {} ../ \;
+          cd ..
+          sha256sum *.deb *.rpm *.pkg.tar.zst > SHA256SUMS.txt
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
+            SHA256SUMS.txt
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

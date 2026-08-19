@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked
+
+override_dh_auto_install:
+	# Binary
+	install -Dm755 target/release/alacritty debian/alacritty/usr/bin/alacritty
+	# Desktop file
+	install -Dm644 extra/linux/Alacritty.desktop debian/alacritty/usr/share/applications/Alacritty.desktop
+	# App icon
+	install -Dm644 extra/logo/alacritty-term.svg debian/alacritty/usr/share/icons/hicolor/scalable/apps/Alacritty.svg
+	# Man pages
+	install -Dm644 extra/man/alacritty.1.scd debian/alacritty/usr/share/man/man1/alacritty.1
+	install -Dm644 extra/man/alacritty-msg.1.scd debian/alacritty/usr/share/man/man1/alacritty-msg.1
+	install -Dm644 extra/man/alacritty.5.scd debian/alacritty/usr/share/man/man5/alacritty.5
+	install -Dm644 extra/man/alacritty-bindings.5.scd debian/alacritty/usr/share/man/man5/alacritty-bindings.5
+	# Shell completions
+	install -Dm644 extra/completions/alacritty.bash debian/alacritty/usr/share/bash-completion/completions/alacritty
+	install -Dm644 extra/completions/alacritty.fish debian/alacritty/usr/share/fish/vendor_completions.d/alacritty.fish
+	install -Dm644 extra/completions/_alacritty debian/alacritty/usr/share/zsh/vendor-completions/_alacritty
+	# Terminfo
+	install -Dm644 extra/alacritty.info debian/alacritty/usr/share/terminfo/a/alacritty
+
+override_dh_auto_test:
+	@echo "Skipping tests during package build"
+
+override_dh_auto_clean:
+	cargo clean || true
